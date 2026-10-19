@@ -1,0 +1,4 @@
+include run_ui.py run_ui.sh run_ui.cmd requirements-ui.lock
+recursive-include examples *.py
+recursive-include docs *.md
+recursive-include benchmarks *.py
