@@ -1,4 +1,5 @@
 """Small data contracts shared by the API, built-ins, and extensions."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -8,9 +9,19 @@ import numpy as np
 import pandas as pd
 
 SCHEMA_VERSION = "1.0"
-STANDARD_COLUMNS = ["sample_id", "method_id", "original_label", "label_issue_score",
-                    "alternative_label", "max_overlap_score", "overlap_class_a", "overlap_class_b",
-                    "sufficient_support", "support_kind", "status"]
+STANDARD_COLUMNS = [
+    "sample_id",
+    "method_id",
+    "original_label",
+    "label_issue_score",
+    "alternative_label",
+    "max_overlap_score",
+    "overlap_class_a",
+    "overlap_class_b",
+    "sufficient_support",
+    "support_kind",
+    "status",
+]
 
 
 class ValidationError(ValueError):
@@ -49,6 +60,7 @@ class DataSnapshot:
 @dataclass(frozen=True)
 class AnalysisInput:
     """Read-only raw data; fitting is explicitly scoped to training indices."""
+
     X: np.ndarray
     y: np.ndarray
     sample_ids: np.ndarray
@@ -74,6 +86,7 @@ class AnalysisInput:
         if indices.ndim != 1 or not len(indices) or np.any(indices < 0) or np.any(indices >= len(self.X)):
             raise ValidationError("train_indices must be nonempty valid row indices")
         from .embeddings import fit_transformer
+
         return fit_transformer(self.embedding, self.X[indices], self.feature_names)
 
     def emit(self, stage, **details):

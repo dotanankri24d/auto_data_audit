@@ -1,8 +1,10 @@
 """CSV/Excel readers used identically by the code API and UI."""
+
 from __future__ import annotations
 import csv
 import io
 from pathlib import Path
+import numpy as np
 import pandas as pd
 from ..contracts import ValidationError
 from ..validation import validate_ids
@@ -52,8 +54,10 @@ def _finish(frame, id_column, info, dtype):
                 try:
                     pd.Series([value]).astype(typ)
                 except (ValueError, TypeError):
-                    raise ValidationError(f"{info.get('sheet_name', 'CSV')}: source row "
-                                          f"{i + info['header'] + 2}, column {col!r}, value {value!r}: {exc}") from exc
+                    raise ValidationError(
+                        f"{info.get('sheet_name', 'CSV')}: source row "
+                        f"{i + info['header'] + 2}, column {col!r}, value {value!r}: {exc}"
+                    ) from exc
             raise ValidationError(f"column {col!r}: {exc}") from exc
     frame.attrs["import_info"] = info
     return frame
@@ -69,25 +73,54 @@ def load_csv(source, *, id_column=None, delimiter=",", encoding="utf-8-sig", hea
         if len(rows) <= header:
             raise ValidationError("CSV: header row does not exist")
         _columns(rows[header])
-        for i, row in enumerate(rows[header + 1:], header + 2):
+        for i, row in enumerate(rows[header + 1 :], header + 2):
             if len(row) != len(rows[header]):
-                raise ValidationError(f"CSV: source row {i} has {len(row)} fields; expected {len(rows[header])}")
+                raise ValidationError(
+                    f"CSV: source row {i} has {len(row)} fields; expected {len(rows[header])}"
+                )
         types = dict(dtype or {})
         if id_column is not None:
             types[id_column] = "string"
-        frame = pd.read_csv(io.BytesIO(raw), sep=delimiter, encoding=encoding, header=header,
-                            dtype=types or None, skip_blank_lines=False)
+        frame = pd.read_csv(
+            io.BytesIO(raw),
+            sep=delimiter,
+            encoding=encoding,
+            header=header,
+            dtype=types or None,
+            skip_blank_lines=False,
+        )
     except (UnicodeError, csv.Error, pd.errors.ParserError, TypeError, ValueError) as exc:
         if isinstance(exc, ValidationError):
             raise
         # Read untyped data for detailed per-cell conversion diagnostics.
         if dtype:
-            frame = pd.read_csv(io.BytesIO(raw), sep=delimiter, encoding=encoding, header=header,
-                                dtype={id_column: "string"} if id_column else None, skip_blank_lines=False)
+            frame = pd.read_csv(
+                io.BytesIO(raw),
+                sep=delimiter,
+                encoding=encoding,
+                header=header,
+                dtype={id_column: "string"} if id_column else None,
+                skip_blank_lines=False,
+            )
         else:
             raise ValidationError(f"CSV: {exc}") from exc
-    return _finish(frame, id_column, {"format": "csv", "delimiter": delimiter, "encoding": encoding,
-                                     "header": header, "id_column": id_column}, dtype)
+    if id_column is not None and id_column in frame:
+        position = rows[header].index(id_column)
+        frame[id_column] = pd.Series(
+            [row[position] for row in rows[header + 1 :]], dtype="string", index=frame.index
+        )
+    return _finish(
+        frame,
+        id_column,
+        {
+            "format": "csv",
+            "delimiter": delimiter,
+            "encoding": encoding,
+            "header": header,
+            "id_column": id_column,
+        },
+        dtype,
+    )
 
 
 def _excel(raw):
@@ -124,10 +157,25 @@ def load_excel(source, *, sheet_name=None, id_column=None, header=0, dtype=None)
             # Read header as cells, before pandas can mangle duplicate names.
             raw_header = book.parse(sheet_name, header=None, nrows=header + 1).iloc[header].tolist()
             _columns(raw_header)
-            frame = book.parse(sheet_name, header=header,
-                               dtype={id_column: "string"} if id_column is not None else None)
-            return _finish(frame, id_column, {"format": book.engine, "sheet_name": sheet_name,
-                                             "header": header, "id_column": id_column}, dtype)
+            frame = book.parse(
+                sheet_name, header=header, dtype={id_column: "string"} if id_column is not None else None
+            )
+            if id_column is not None and id_column in frame:
+                # ID text is literal: tokens such as "NA" are not missing IDs.
+                ids = book.parse(
+                    sheet_name,
+                    header=header,
+                    usecols=[id_column],
+                    dtype={id_column: "string"},
+                    keep_default_na=False,
+                )
+                frame[id_column] = ids[id_column]
+            return _finish(
+                frame,
+                id_column,
+                {"format": book.engine, "sheet_name": sheet_name, "header": header, "id_column": id_column},
+                dtype,
+            )
     except ValidationError:
         raise
     except Exception as exc:
@@ -137,6 +185,7 @@ def load_excel(source, *, sheet_name=None, id_column=None, header=0, dtype=None)
 def map_columns(frame, *, label, features, groups=None, metadata=None):
     """Explicit column roles, including source-aware numeric conversion errors."""
     from ..validation import snapshot
+
     features, metadata = list(features), list(metadata or [])
     if not features or len(features) != len(set(features)):
         raise ValidationError("Select unique feature columns")
@@ -151,8 +200,18 @@ def map_columns(frame, *, label, features, groups=None, metadata=None):
         except (ValueError, TypeError) as exc:
             bad = pd.to_numeric(X[col], errors="coerce").isna() & X[col].notna()
             pos = next(i for i, v in enumerate(bad) if v)
-            raise ValidationError(f"{info.get('sheet_name', 'CSV')}: source row {pos + info.get('header', 0) + 2}, "
-                                  f"column {col!r}, value {X[col].iloc[pos]!r} is not numeric") from exc
+            raise ValidationError(
+                f"{info.get('sheet_name', 'CSV')}: source row {pos + info.get('header', 0) + 2}, "
+                f"column {col!r}, value {X[col].iloc[pos]!r} is not numeric"
+            ) from exc
+        invalid = ~np.isfinite(X[col].to_numpy(dtype=float, na_value=np.nan))
+        if invalid.any():
+            pos = int(np.flatnonzero(invalid)[0])
+            raise ValidationError(
+                f"{info.get('sheet_name', 'CSV')}: source row {pos + info.get('header', 0) + 2}, "
+                f"column {col!r}, value {X[col].iloc[pos]!r} must be finite"
+            )
     X.attrs = frame.attrs.copy()
-    return snapshot(X, frame[label], None if groups is None else frame[groups],
-                    frame[metadata] if metadata else None)
+    return snapshot(
+        X, frame[label], None if groups is None else frame[groups], frame[metadata] if metadata else None
+    )

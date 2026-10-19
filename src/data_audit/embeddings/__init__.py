@@ -1,4 +1,5 @@
 """Training-scoped, composable representations; importing never fits a model."""
+
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
@@ -23,7 +24,9 @@ class CheckedTransform:
             raise ValidationError("transform: wrong feature count or nonfinite input")
         out = np.asarray(self._transform(a), dtype=float)
         if out.ndim != 2 or out.shape != (len(a), len(self.feature_names)) or not np.isfinite(out).all():
-            raise ValidationError("transform must preserve rows and return a finite matrix with consistent width")
+            raise ValidationError(
+                "transform must preserve rows and return a finite matrix with consistent width"
+            )
         return out
 
     transform = __call__
@@ -44,6 +47,7 @@ def fit_transformer(component, X, feature_names):
 @dataclass(frozen=True)
 class Identity:
     """Use the original numeric features."""
+
     def fit(self, X):
         return lambda x: np.array(x, dtype=float, copy=True)
 
@@ -51,9 +55,13 @@ class Identity:
 @dataclass(frozen=True)
 class Standardize:
     """Center and scale features using training statistics only."""
+
     epsilon: float = 1e-8
 
     def __post_init__(self):
+        from ..plugins import validate_component_types
+
+        validate_component_types(self)
         if not np.isfinite(self.epsilon) or self.epsilon <= 0:
             raise ValueError("epsilon must be positive and finite")
 
@@ -66,12 +74,16 @@ class Standardize:
 @dataclass(frozen=True)
 class PCAEmbedding:
     """Select a component count or explained-variance fraction, with optional whitening."""
+
     n_components: int | float = 2
     standardize: bool = True
     whiten: bool = False
     random_state: int = 42
 
     def __post_init__(self):
+        from ..plugins import validate_component_types
+
+        validate_component_types(self)
         n = self.n_components
         if isinstance(n, bool) or not ((type(n) is int and n >= 1) or (type(n) is float and 0 < n < 1)):
             raise ValueError("n_components must be a positive integer or variance fraction between 0 and 1")
@@ -82,8 +94,12 @@ class PCAEmbedding:
         if len(X) < 2 or not np.any(np.var(X, axis=0) > 0):
             raise ValueError("PCA requires at least two samples and nonzero variance")
         norm = Standardize().fit(X) if self.standardize else Identity().fit(X)
-        model = PCA(n_components=self.n_components, whiten=self.whiten,
-                    svd_solver="full", random_state=self.random_state).fit(norm(X))
+        model = PCA(
+            n_components=self.n_components,
+            whiten=self.whiten,
+            svd_solver="full",
+            random_state=self.random_state,
+        ).fit(norm(X))
         if self.whiten and np.any(model.explained_variance_ <= np.finfo(float).eps):
             raise ValueError("PCA whitening requires nonzero variance in every retained component")
         return lambda x: model.transform(norm(x))
@@ -105,12 +121,14 @@ class EmbeddingPipeline:
             for t in transforms:
                 x = t(x)
             return x
+
         return transform
 
 
 @dataclass(frozen=True)
 class AutoencoderEmbedding:
     """Optional CPU autoencoder; validation and early stopping stay inside training data."""
+
     bottleneck: int = 2
     epochs: int = 50
     batch_size: int = 64
@@ -121,6 +139,9 @@ class AutoencoderEmbedding:
     activation: Literal["relu", "tanh"] = "relu"
 
     def __post_init__(self):
+        from ..plugins import validate_component_types
+
+        validate_component_types(self)
         if min(self.bottleneck, self.epochs, self.batch_size, self.patience) < 1:
             raise ValueError("bottleneck, epochs, batch_size and patience must be positive")
         if self.regularization < 0 or not 0 < self.validation_fraction < 0.5:
@@ -147,17 +168,19 @@ class AutoencoderEmbedding:
             torch.manual_seed(self.random_state)
             hidden = max(self.bottleneck * 2, X.shape[1])
             act = torch.nn.ReLU if self.activation == "relu" else torch.nn.Tanh
-            encoder = torch.nn.Sequential(torch.nn.Linear(X.shape[1], hidden), act(),
-                                          torch.nn.Linear(hidden, self.bottleneck))
-            model = torch.nn.Sequential(encoder, torch.nn.Linear(self.bottleneck, hidden), act(),
-                                        torch.nn.Linear(hidden, X.shape[1]))
+            encoder = torch.nn.Sequential(
+                torch.nn.Linear(X.shape[1], hidden), act(), torch.nn.Linear(hidden, self.bottleneck)
+            )
+            model = torch.nn.Sequential(
+                encoder, torch.nn.Linear(self.bottleneck, hidden), act(), torch.nn.Linear(hidden, X.shape[1])
+            )
             optim = torch.optim.Adam(model.parameters(), weight_decay=self.regularization)
             best, stale, state = float("inf"), 0, None
             for _ in range(self.epochs):
                 model.train()
                 indices = torch.randperm(len(train))
                 for start in range(0, len(train), self.batch_size):
-                    batch = train[indices[start:start + self.batch_size]]
+                    batch = train[indices[start : start + self.batch_size]]
                     optim.zero_grad()
                     loss = torch.nn.functional.mse_loss(model(batch), batch)
                     loss.backward()
@@ -178,4 +201,5 @@ class AutoencoderEmbedding:
         def transform(x):
             with torch.no_grad():
                 return encoder(torch.tensor(norm(x), dtype=torch.float32)).numpy()
+
         return transform

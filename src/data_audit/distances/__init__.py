@@ -1,4 +1,5 @@
 """Distance is independent of neighborhood selection and decision policy."""
+
 from dataclasses import dataclass
 import numpy as np
 
@@ -15,4 +16,5 @@ def checked_distance(distance):
         if not np.isscalar(value) or not np.isfinite(value) or value < 0:
             raise ValueError("distance must return a finite nonnegative scalar")
         return float(value)
+
     return call

@@ -1,4 +1,5 @@
 """Decision thresholds never refit an analysis."""
+
 from dataclasses import dataclass
 import numpy as np
 import pandas as pd
@@ -12,6 +13,9 @@ class ReviewPolicy:
     min_alternative_agreement: float | None = None
 
     def __post_init__(self):
+        from ..plugins import validate_component_types
+
+        validate_component_types(self)
         for name in ("issue_threshold", "overlap_threshold", "min_alternative_agreement"):
             value = getattr(self, name)
             if value is not None and (not np.isfinite(value) or not 0 <= value <= 1):
@@ -27,7 +31,9 @@ class ReviewPolicy:
             else:
                 valid &= samples["alternative_agreement"].ge(self.min_alternative_agreement).fillna(False)
         flags = pd.DataFrame(index=samples.index)
-        for flag, score, threshold in [("label_issue", "label_issue_score", self.issue_threshold),
-                                       ("overlap", "max_overlap_score", self.overlap_threshold)]:
+        for flag, score, threshold in [
+            ("label_issue", "label_issue_score", self.issue_threshold),
+            ("overlap", "max_overlap_score", self.overlap_threshold),
+        ]:
             flags[flag] = samples[score].ge(threshold).astype("boolean").where(valid & samples[score].notna())
         return flags

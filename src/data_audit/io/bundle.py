@@ -1,4 +1,5 @@
 """Versioned JSON + ZIP persistence. No pickle, code loading, or archive extraction."""
+
 from __future__ import annotations
 from datetime import date, datetime
 import io
@@ -58,12 +59,23 @@ def _frame(frame):
     columns = []
     for i in range(len(frame.columns)):
         s = frame.iloc[:, i]
-        descriptor = {"name": _scalar(frame.columns[i]), "dtype": str(s.dtype), "values": [_scalar(v) for v in s]}
+        descriptor = {
+            "name": _scalar(frame.columns[i]),
+            "dtype": str(s.dtype),
+            "values": [_scalar(v) for v in s],
+        }
         if isinstance(s.dtype, pd.CategoricalDtype):
             descriptor.update(categories=[_scalar(v) for v in s.cat.categories], ordered=s.cat.ordered)
+        if isinstance(s.dtype, pd.StringDtype):
+            descriptor["storage"] = s.dtype.storage
         columns.append(descriptor)
-    return {"columns": columns, "index": [_scalar(v) for v in frame.index],
-            "index_name": _scalar(frame.index.name), "index_dtype": str(frame.index.dtype)}
+    return {
+        "columns": columns,
+        "columns_name": _scalar(frame.columns.name),
+        "index": [_scalar(v) for v in frame.index],
+        "index_name": _scalar(frame.index.name),
+        "index_dtype": str(frame.index.dtype),
+    }
 
 
 def _unframe(obj):
@@ -75,11 +87,18 @@ def _unframe(obj):
         series = []
         for c in obj["columns"]:
             values = [_unscalar(v) for v in c["values"]]
-            dtype = (pd.CategoricalDtype([_unscalar(v) for v in c["categories"]], ordered=c["ordered"])
-                     if "categories" in c else c["dtype"])
+            dtype = (
+                pd.CategoricalDtype([_unscalar(v) for v in c["categories"]], ordered=c["ordered"])
+                if "categories" in c
+                else c["dtype"]
+            )
+            if "storage" in c:
+                dtype = pd.StringDtype(storage=c["storage"])
             s = pd.Series(values, index=index, dtype=dtype, name=_unscalar(c["name"]))
             series.append(s)
-        return pd.concat(series, axis=1) if series else pd.DataFrame(index=index)
+        result = pd.concat(series, axis=1) if series else pd.DataFrame(index=index)
+        result.columns.name = _unscalar(obj.get("columns_name", {"t": "none"}))
+        return result
     except (ValueError, TypeError) as exc:
         raise ValidationError(f"Invalid bundle table dtype/shape: {exc}") from exc
 
@@ -96,6 +115,7 @@ def _jsonable(value):
     except ValidationError:
         # Configuration-only objects: describe them, never serialize executable code.
         from ..runner import describe
+
         return {"__unavailable_component__": describe(value)}
 
 
@@ -117,25 +137,49 @@ def save_run(result, destination=None, *, include_data=True):
         frames[key] = _frame(frame)
         return key
 
-    manifest = {"schema_version": SCHEMA_VERSION, "run_id": result.run_id, "dataset_id": result.dataset_id,
-                "status": result.status, "run_info": _jsonable(result.run_info), "data": None,
-                "tables": {k: put(getattr(result, k)) for k in
-                           ["samples", "overlaps", "class_evidence", "diagnostics", "reviews"]},
-                "evidence": {m: {n: put(t) for n, t in tables.items()} for m, tables in result.evidence.items()},
-                "representations": {}, "decisions": []}
+    manifest = {
+        "schema_version": SCHEMA_VERSION,
+        "run_id": result.run_id,
+        "dataset_id": result.dataset_id,
+        "status": result.status,
+        "run_info": _jsonable(result.run_info),
+        "data": None,
+        "tables": {
+            k: put(getattr(result, k))
+            for k in ["samples", "overlaps", "class_evidence", "diagnostics", "reviews"]
+        },
+        "evidence": {m: {n: put(t) for n, t in tables.items()} for m, tables in result.evidence.items()},
+        "representations": {},
+        "decisions": [],
+    }
     if include_data and result.data is not None:
         d = result.data
-        manifest["data"] = {"X": put(d.X), "y": put(d.y.to_frame()),
-                            "groups": put(d.groups.to_frame()) if d.groups is not None else None,
-                            "metadata": put(d.metadata) if d.metadata is not None else None,
-                            "import_info": _jsonable(d.import_info)}
+        manifest["data"] = {
+            "X": put(d.X),
+            "y": put(d.y.to_frame()),
+            "y_name": _scalar(d.y.name),
+            "groups": put(d.groups.to_frame()) if d.groups is not None else None,
+            "groups_name": _scalar(d.groups.name) if d.groups is not None else None,
+            "metadata": put(d.metadata) if d.metadata is not None else None,
+            "import_info": _jsonable(d.import_info),
+        }
     for m, reps in result.representations.items():
-        manifest["representations"][m] = {name: {"coordinates": put(rep["coordinates"]),
-                                              "info": _jsonable({k: v for k, v in rep.items() if k != "coordinates"})}
-                                         for name, rep in reps.items()}
+        manifest["representations"][m] = {
+            name: {
+                "coordinates": put(rep["coordinates"]),
+                "info": _jsonable({k: v for k, v in rep.items() if k != "coordinates"}),
+            }
+            for name, rep in reps.items()
+        }
     for d in result.decisions:
-        manifest["decisions"].append(dict(policy_id=d.policy_id, method_id=d.method_id, flags=put(d.flags),
-                                           policy_info=_jsonable(d.policy_info)))
+        manifest["decisions"].append(
+            dict(
+                policy_id=d.policy_id,
+                method_id=d.method_id,
+                flags=put(d.flags),
+                policy_info=_jsonable(d.policy_info),
+            )
+        )
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, allow_nan=False))
@@ -150,15 +194,21 @@ def save_run(result, destination=None, *, include_data=True):
 def load_run(source):
     """Restore viewable data only, even when extension source is absent."""
     from .readers import _bytes
+
     try:
         with zipfile.ZipFile(io.BytesIO(_bytes(source))) as archive:
-            if len(archive.infolist()) > 10000 or sum(x.file_size for x in archive.infolist()) > MAX_BUNDLE_BYTES:
+            if (
+                len(archive.infolist()) > 10000
+                or sum(x.file_size for x in archive.infolist()) > MAX_BUNDLE_BYTES
+            ):
                 raise ValidationError("Bundle exceeds size or member-count limit")
             if len(set(archive.namelist())) != len(archive.namelist()):
                 raise ValidationError("Bundle has duplicate members")
             manifest = json.loads(archive.read("manifest.json"))
             if manifest["schema_version"] != SCHEMA_VERSION:
-                raise ValidationError(f"Unsupported bundle schema {manifest['schema_version']}; expected {SCHEMA_VERSION}")
+                raise ValidationError(
+                    f"Unsupported bundle schema {manifest['schema_version']}; expected {SCHEMA_VERSION}"
+                )
 
             def get(key):
                 if not key.startswith("tables/") or ".." in key or not key.endswith(".json"):
@@ -167,20 +217,51 @@ def load_run(source):
 
             data = manifest["data"]
             if data is not None:
-                data = DataSnapshot(get(data["X"]), get(data["y"]).iloc[:, 0],
-                                    get(data["groups"]).iloc[:, 0] if data["groups"] else None,
-                                    get(data["metadata"]) if data["metadata"] else None,
-                                    _unjsonable(data["import_info"]))
-            result = AuditResult(run_id=manifest["run_id"], dataset_id=manifest["dataset_id"], status=manifest["status"],
-                                 **{k: get(v) for k, v in manifest["tables"].items()}, data=data,
-                                 evidence={m: {n: get(t) for n, t in tables.items()} for m, tables in manifest["evidence"].items()},
-                                 representations={m: {n: {"coordinates": get(r["coordinates"]), **_unjsonable(r["info"])}
-                                                         for n, r in reps.items()} for m, reps in manifest["representations"].items()},
-                                 run_info=_unjsonable(manifest["run_info"]))
-            result.decisions = [DecisionResult(d["policy_id"], result.run_id, d["method_id"], get(d["flags"]),
-                                                _unjsonable(d["policy_info"])) for d in manifest["decisions"]]
+                labels = get(data["y"]).iloc[:, 0].rename(_unscalar(data["y_name"]))
+                groups = (
+                    get(data["groups"]).iloc[:, 0].rename(_unscalar(data["groups_name"]))
+                    if data["groups"]
+                    else None
+                )
+                data = DataSnapshot(
+                    get(data["X"]),
+                    labels,
+                    groups,
+                    get(data["metadata"]) if data["metadata"] else None,
+                    _unjsonable(data["import_info"]),
+                )
+            result = AuditResult(
+                run_id=manifest["run_id"],
+                dataset_id=manifest["dataset_id"],
+                status=manifest["status"],
+                **{k: get(v) for k, v in manifest["tables"].items()},
+                data=data,
+                evidence={
+                    m: {n: get(t) for n, t in tables.items()} for m, tables in manifest["evidence"].items()
+                },
+                representations={
+                    m: {
+                        n: {"coordinates": get(r["coordinates"]), **_unjsonable(r["info"])}
+                        for n, r in reps.items()
+                    }
+                    for m, reps in manifest["representations"].items()
+                },
+                run_info=_unjsonable(manifest["run_info"]),
+            )
+            result.decisions = [
+                DecisionResult(
+                    d["policy_id"],
+                    result.run_id,
+                    d["method_id"],
+                    get(d["flags"]),
+                    _unjsonable(d["policy_info"]),
+                )
+                for d in manifest["decisions"]
+            ]
             result.run_info["restored_view_only"] = True
-            result.run_info["rerun_note"] = "Rerun requires matching component code and dependencies; bundle contains no executable code"
+            result.run_info["rerun_note"] = (
+                "Rerun requires matching component code and dependencies; bundle contains no executable code"
+            )
             return result
     except ValidationError:
         raise

@@ -1,4 +1,5 @@
 """Reusable projection and summary operations; UI keeps no analysis mathematics."""
+
 import numpy as np
 import pandas as pd
 from ..contracts import ValidationError
@@ -18,10 +19,16 @@ def reference_projection(result, embedding=None):
     if coordinates.shape[1] == 1:
         coordinates["z1"] = 0.0
     from ..runner import describe
-    return {"coordinates": coordinates, "fitted_scope": "all_data_display_only",
-            "feature_names": list(coordinates.columns), "sample_ids": X.index.tolist(),
-            "component": describe(embedding), "seed": getattr(embedding, "random_state", None),
-            "note": "Display-only reference fit; distances/scores remain in the analysis space"}
+
+    return {
+        "coordinates": coordinates,
+        "fitted_scope": "all_data_display_only",
+        "feature_names": list(coordinates.columns),
+        "sample_ids": X.index.tolist(),
+        "component": describe(embedding),
+        "seed": getattr(embedding, "random_state", None),
+        "note": "Display-only reference fit; distances/scores remain in the analysis space",
+    }
 
 
 def category_summary(result, method_id, decision=None):
@@ -42,7 +49,9 @@ def category_summary(result, method_id, decision=None):
 
 def compare_methods(result):
     """Compare ranks without averaging scores from different methods."""
-    return result.samples.pivot(index="sample_id", columns="method_id", values="label_issue_score").rank(pct=True)
+    return result.samples.pivot(index="sample_id", columns="method_id", values="label_issue_score").rank(
+        pct=True
+    )
 
 
 def demo_data(seed=42, n_samples=240):
@@ -52,9 +61,40 @@ def demo_data(seed=42, n_samples=240):
     X = rng.normal(size=(n_samples, 5))
     X[:, :2] += np.array([[-2, 0], [2, 0], [0, 2]])[np.arange(n_samples) % 3]
     y[::31] = np.roll(y, 1)[::31]
-    out = pd.DataFrame(X, columns=[f"feature_{i}" for i in range(5)],
-                       index=[f"sample_{i:04d}" for i in range(n_samples)])
+    out = pd.DataFrame(
+        X, columns=[f"feature_{i}" for i in range(5)], index=[f"sample_{i:04d}" for i in range(n_samples)]
+    )
     out["label"] = y
     out["recording"] = np.arange(n_samples) // 6
     out.index.name = "sample_id"
     return out
+
+
+def metadata_summary(result, method_id, column, decision=None):
+    """Stratify one method by explicitly selected source metadata."""
+    if result.data is None or result.data.metadata is None or column not in result.data.metadata:
+        raise ValidationError(f"Metadata column {column!r} is unavailable")
+    samples = result.samples[result.samples.method_id == method_id].copy()
+    samples = samples.join(result.data.metadata[column].rename("metadata_value"), on="sample_id")
+    if decision is not None:
+        samples = samples.join(decision.flags, on="sample_id")
+    agg = {"samples": ("sample_id", "size"), "supported": ("sufficient_support", "sum")}
+    for flag in ["label_issue", "overlap"]:
+        if flag in samples:
+            agg[flag] = (flag, "sum")
+            agg[flag + "_decided"] = (flag, "count")
+    return (
+        samples.groupby(["metadata_value", "original_label"], sort=False, dropna=False)
+        .agg(**agg)
+        .reset_index()
+    )
+
+
+def compare_decisions(result):
+    """Align the latest recorded flags per method; never average analysis scores."""
+    columns = []
+    for method in result.samples.method_id.unique():
+        decisions = [d for d in result.decisions if d.method_id == method]
+        if decisions:
+            columns.append(decisions[-1].flags.add_prefix(method + "."))
+    return pd.concat(columns, axis=1) if columns else pd.DataFrame()

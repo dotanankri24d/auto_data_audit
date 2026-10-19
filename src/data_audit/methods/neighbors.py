@@ -1,4 +1,5 @@
 """Exact bounded-memory neighborhoods with explicit scale and support."""
+
 from dataclasses import dataclass
 from typing import Literal
 import numpy as np
@@ -24,15 +25,27 @@ class NeighborAudit:
     save_evidence: bool = True
 
     def __post_init__(self):
+        from ..plugins import validate_component_types
+
+        validate_component_types(self)
         if min(self.n_neighbors, self.min_neighbors, self.batch_size) < 1:
             raise ValueError("n_neighbors, min_neighbors and batch_size must be positive")
         if self.min_effective_neighbors <= 0 or not np.isfinite(self.min_effective_neighbors):
             raise ValueError("min_effective_neighbors must be positive and finite")
-        if not 0 <= self.radius_quantile <= 1 or not np.isfinite(self.distance_epsilon) or self.distance_epsilon <= 0:
+        if (
+            not 0 <= self.radius_quantile <= 1
+            or not np.isfinite(self.distance_epsilon)
+            or self.distance_epsilon <= 0
+        ):
             raise ValueError("radius_quantile must be in [0,1]; distance_epsilon must be positive")
-        if self.radius_mode not in ("auto", "fixed", "none") or self.weighting not in ("uniform", "inverse_distance"):
+        if self.radius_mode not in ("auto", "fixed", "none") or self.weighting not in (
+            "uniform",
+            "inverse_distance",
+        ):
             raise ValueError("Unknown radius_mode or weighting")
-        if self.radius_mode == "fixed" and (self.max_radius is None or not np.isfinite(self.max_radius) or self.max_radius < 0):
+        if self.radius_mode == "fixed" and (
+            self.max_radius is None or not np.isfinite(self.max_radius) or self.max_radius < 0
+        ):
             raise ValueError("fixed radius requires finite max_radius >= 0")
 
     def analyze(self, data):
@@ -60,14 +73,16 @@ class NeighborAudit:
                     cutoff = np.partition(d[eligible], self.n_neighbors - 1)[self.n_neighbors - 1]
                     lower = eligible[d[eligible] < cutoff]
                     ties = eligible[d[eligible] == cutoff]
-                    eligible = np.concatenate([lower, ties[:self.n_neighbors - len(lower)]])
+                    eligible = np.concatenate([lower, ties[: self.n_neighbors - len(lower)]])
                 ix = eligible[np.lexsort((eligible, d[eligible]))]
                 nearest.append((ix, d[ix].copy()))
                 if len(ix) == self.n_neighbors:
                     kth.append(float(d[ix[-1]]))
         if self.radius_mode == "auto":
             if len(kth) != n:
-                raise ValueError("Insufficient reference neighbors to calibrate auto radius; choose radius_mode='none' explicitly")
+                raise ValueError(
+                    "Insufficient reference neighbors to calibrate auto radius; choose radius_mode='none' explicitly"
+                )
             radius = float(np.quantile(kth, self.radius_quantile))
         else:
             radius = self.max_radius if self.radius_mode == "fixed" else None
@@ -78,29 +93,65 @@ class NeighborAudit:
             data.token.check()
             if radius is not None:
                 ix, ds = ix[ds <= radius], ds[ds <= radius]
-            weights = np.ones(len(ix)) if self.weighting == "uniform" else 1 / np.maximum(ds, self.distance_epsilon)
-            effective = float(weights.sum() ** 2 / (weights ** 2).sum()) if len(ix) else np.nan
+            weights = (
+                np.ones(len(ix)) if self.weighting == "uniform" else 1 / np.maximum(ds, self.distance_epsilon)
+            )
+            effective = float(weights.sum() ** 2 / (weights**2).sum()) if len(ix) else np.nan
             supports.append(bool(len(ix) >= self.min_neighbors and effective >= self.min_effective_neighbors))
             if len(ix):
                 q[i] = [weights[data.y[ix] == c].sum() / weights.sum() for c in classes]
-            metrics = dict(neighbor_count=len(ix), effective_neighbors=effective,
-                           nearest_distance=float(ds[0]) if len(ds) else np.nan,
-                           max_distance=float(ds[-1]) if len(ds) else np.nan,
-                           median_distance=float(np.median(ds)) if len(ds) else np.nan,
-                           radius_used=radius,
-                           reference_group_count=len(pd.unique(data.groups[ix])) if data.groups is not None else None)
+            metrics = dict(
+                neighbor_count=len(ix),
+                effective_neighbors=effective,
+                nearest_distance=float(ds[0]) if len(ds) else np.nan,
+                max_distance=float(ds[-1]) if len(ds) else np.nan,
+                median_distance=float(np.median(ds)) if len(ds) else np.nan,
+                radius_used=radius,
+                reference_group_count=len(pd.unique(data.groups[ix])) if data.groups is not None else None,
+            )
             for name, value in metrics.items():
                 diagnostics.append(dict(sample_id=data.sample_ids[i], metric_name=name, numeric_value=value))
             if self.save_evidence:
                 for rank, (j, distance, weight) in enumerate(zip(ix, ds, weights), 1):
-                    evidence.append(dict(query_sample_id=data.sample_ids[i], neighbor_sample_id=data.sample_ids[j],
-                                         rank=rank, distance=distance, weight=weight, neighbor_label=data.y[j]))
-        result = score_evidence(data.sample_ids, data.y, classes, q, supports,
-                                "local_neighbors" if radius is not None else "neighbor_count_and_weight_only")
-        result.update(diagnostics=pd.DataFrame(diagnostics),
-                      evidence={"neighbors": pd.DataFrame(evidence, columns=["query_sample_id", "neighbor_sample_id",
-                                "rank", "distance", "weight", "neighbor_label"])},
-                      representations={"reference": {"coordinates": pd.DataFrame(z, index=data.sample_ids,
-                                                  columns=transform.feature_names), "fitted_scope": "all_reference"}},
-                      run_info={"calibrated_radius": radius, "evidence_saved": self.save_evidence})
+                    evidence.append(
+                        dict(
+                            query_sample_id=data.sample_ids[i],
+                            neighbor_sample_id=data.sample_ids[j],
+                            rank=rank,
+                            distance=distance,
+                            weight=weight,
+                            neighbor_label=data.y[j],
+                        )
+                    )
+        result = score_evidence(
+            data.sample_ids,
+            data.y,
+            classes,
+            q,
+            supports,
+            "local_neighbors" if radius is not None else "neighbor_count_and_weight_only",
+        )
+        result.update(
+            diagnostics=pd.DataFrame(diagnostics),
+            evidence={
+                "neighbors": pd.DataFrame(
+                    evidence,
+                    columns=[
+                        "query_sample_id",
+                        "neighbor_sample_id",
+                        "rank",
+                        "distance",
+                        "weight",
+                        "neighbor_label",
+                    ],
+                )
+            },
+            representations={
+                "reference": {
+                    "coordinates": pd.DataFrame(z, index=data.sample_ids, columns=transform.feature_names),
+                    "fitted_scope": "all_reference",
+                }
+            },
+            run_info={"calibrated_radius": radius, "evidence_saved": self.save_evidence},
+        )
         return result

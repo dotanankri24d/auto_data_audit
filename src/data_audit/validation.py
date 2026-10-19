@@ -1,4 +1,5 @@
 """Strict role mapping and snapshot creation. Never silently align rows."""
+
 from __future__ import annotations
 import hashlib
 import numpy as np
@@ -8,9 +9,13 @@ from .contracts import DataSnapshot, ValidationError
 
 def validate_ids(index, field="sample_id"):
     if index.hasnans or not index.is_unique:
-        raise ValidationError(f"{field}: IDs must be unique and non-missing; offending IDs: "
-                              f"{list(index[index.duplicated(keep=False)])[:5]}")
-    if any(not isinstance(v, (str, int, float, np.integer, np.floating)) or isinstance(v, bool) for v in index):
+        raise ValidationError(
+            f"{field}: IDs must be unique and non-missing; offending IDs: "
+            f"{list(index[index.duplicated(keep=False)])[:5]}"
+        )
+    if any(
+        not isinstance(v, (str, int, float, np.integer, np.floating)) or isinstance(v, bool) for v in index
+    ):
         raise ValidationError(f"{field}: IDs must be strings or numbers")
 
 
@@ -34,10 +39,12 @@ def snapshot(X, y, groups=None, metadata=None, sample_ids=None, feature_names=No
     for col in frame:
         if not pd.api.types.is_numeric_dtype(frame[col]):
             raise ValidationError(f"X column {col!r} must be numeric")
-    a = frame.to_numpy(dtype=float)
+    a = frame.to_numpy(dtype=float, na_value=np.nan)
     if not np.isfinite(a).all():
         rows, cols = np.where(~np.isfinite(a))
-        raise ValidationError(f"X must be finite; sample {frame.index[rows[0]]!r}, column {frame.columns[cols[0]]!r}")
+        raise ValidationError(
+            f"X must be finite; sample {frame.index[rows[0]]!r}, column {frame.columns[cols[0]]!r}"
+        )
 
     def vector(v, name):
         if v is None:

@@ -1,4 +1,5 @@
 """Signature-derived parameters and explicit, local-code extension discovery."""
+
 from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
@@ -9,8 +10,12 @@ from typing import Any, Literal, Union, get_args, get_origin, get_type_hints
 from ..contracts import ValidationError
 
 INFRA = {"embedding": 1, "distance": 2, "method": 1, "policy": 1}
-ENTRY = {"embeddings": ("embedding", "fit"), "distances": ("distance", "distance"),
-         "methods": ("method", "analyze"), "policies": ("policy", "decide")}
+ENTRY = {
+    "embeddings": ("embedding", "fit"),
+    "distances": ("distance", "distance"),
+    "methods": ("method", "analyze"),
+    "policies": ("policy", "decide"),
+}
 
 
 @dataclass(frozen=True)
@@ -55,9 +60,12 @@ def parameter_schema(function, skip=0, supplied=None):
         choices = get_args(annotation) if get_origin(annotation) is Literal else ()
         kind = type(choices[0]) if choices else annotation
         if kind not in (bool, int, float, str) or any(type(c) is not kind for c in choices):
-            raise ValidationError(f"{p.name}: unsupported UI type {annotation}; supply a registered component or value")
-        fields.append(Parameter(p.name, annotation, None if required else p.default,
-                                required, nullable, choices, kind))
+            raise ValidationError(
+                f"{p.name}: unsupported UI type {annotation}; supply a registered component or value"
+            )
+        fields.append(
+            Parameter(p.name, annotation, None if required else p.default, required, nullable, choices, kind)
+        )
     return fields
 
 
@@ -101,6 +109,13 @@ def _matches(value, annotation):
     return True  # arbitrary Python objects remain usable in the code API
 
 
+def validate_component_types(component):
+    """Apply the signature type contract to built-in dataclass constructors too."""
+    for name, annotation in get_type_hints(type(component)).items():
+        if not _matches(getattr(component, name), annotation):
+            raise ValidationError(f"{name}: expected {annotation}")
+
+
 @dataclass(frozen=True)
 class BoundComponent:
     kind: str
@@ -126,9 +141,13 @@ class BoundComponent:
             source = inspect.getsource(self.function)
         except (OSError, TypeError):
             source = repr(self.function)
-        return {"component": self.name, "kind": self.kind, "parameters": self.params,
-                "source_hash": self.source_hash or hashlib.sha256(source.encode()).hexdigest(),
-                "module": self.function.__module__}
+        return {
+            "component": self.name,
+            "kind": self.kind,
+            "parameters": self.params,
+            "source_hash": self.source_hash or hashlib.sha256(source.encode()).hexdigest(),
+            "module": self.function.__module__,
+        }
 
 
 def bind(kind, function, name=None, **params):
