@@ -52,3 +52,25 @@ def test_pca_variance_and_extension_forms(tmp_path):
     by_label(at.radio, "PCA component selection").set_value("Explained variance").run()
     assert by_label(at.number_input, "variance_fraction").value == 0.95
     assert not at.exception and not list(at.error)
+
+
+def test_show_existing_result_never_refits(monkeypatch):
+    from data_audit import audit, NeighborAudit, load_run
+    from data_audit.ui import show
+    from data_audit import cli
+
+    result = audit([[0], [1], [2]], ["A", "B", "A"], methods=[NeighborAudit(radius_mode="none")])
+    files = []
+
+    def serve(**kwargs):
+        path = Path(kwargs["environ"]["DATA_AUDIT_RESULT"])
+        files.append(path)
+        restored = load_run(path)
+        assert restored.run_id == result.run_id
+        assert restored.samples.equals(result.samples)
+        assert kwargs["no_browser"]
+        return 0
+
+    monkeypatch.setattr(cli, "serve", serve)
+    assert show(result, no_browser=True) == 0
+    assert not files[0].exists()
