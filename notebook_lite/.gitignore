@@ -1,0 +1,6 @@
+.venv/
+wheels/
+.pip-cache/
+__pycache__/
+.ipynb_checkpoints/
+exports/
