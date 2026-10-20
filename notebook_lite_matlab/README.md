@@ -90,8 +90,10 @@ Filtering an existing result does not reanalyze the reference population.
 
 ## Validation status
 
-MATLAB is not installed in the authoring environment, so MATLAB execution and
-Live Editor opening have **not been verified locally**. `checks.m` covers IDs,
+**Passed on MATLAB R2025b in [GitHub Actions](https://github.com/dotanankri24d/auto_data_audit/actions/runs/39380758410):**
+all numerical checks and an end-to-end execution of the actual `analysis.mlx`.
+MATLAB is not installed locally; interactive Live Editor UI was not inspected.
+`checks.m` covers IDs,
 duplicate-feature neighbors, radius abstention, invalid inputs, group isolation,
 fold-local fitting, RNG restoration, class evidence normalization, single-repeat
 stability, direct formulas, and Python numerical fixtures.
