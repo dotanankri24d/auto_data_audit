@@ -1,0 +1,19 @@
+name: MATLAB notebook
+on:
+  push:
+    paths: ['notebook_lite_matlab/**', '.github/workflows/matlab.yml']
+  pull_request:
+    paths: ['notebook_lite_matlab/**', '.github/workflows/matlab.yml']
+  workflow_dispatch:
+jobs:
+  matlab:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: matlab-actions/setup-matlab@v2
+        with:
+          release: R2025b
+          products: Statistics_and_Machine_Learning_Toolbox
+      - uses: matlab-actions/run-command@v2
+        with:
+          command: cd('notebook_lite_matlab'); checks; run('analysis.mlx');
